@@ -139,7 +139,7 @@ impl Game {
 
         // Draw new food
         stdout.execute(crossterm::cursor::MoveTo(self.food.0, self.food.1))?;
-        print!("★");
+        print!("\x1b[31m●\x1b[0m");
 
         // Draw borders
         for x in 1..self.width {
