@@ -1,95 +1,226 @@
-use std::io::{stdout, Write};
-
-use beryllium::*;
-// use crossterm::{
-//     cursor,
-//     event::read,
-//     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
-//     ExecutableCommand, QueueableCommand,
-// };
+use crossterm::{
+    cursor::{Hide, Show},
+    event::{self, Event, KeyCode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    ExecutableCommand,
+};
 use rand::Rng;
-fn main() {
-    // Initialize SDL
-    let sdl = Sdl::init(init::InitFlags::EVERYTHING);
+use std::{
+    io,
+    io::Write,
+    time::{Duration, Instant},
+};
 
-    // Set OpenGL context attributes
-    sdl.set_gl_context_major_version(3).unwrap();
-    sdl.set_gl_context_minor_version(3).unwrap();
-    sdl.set_gl_profile(video::GlProfile::Core).unwrap();
-    // #[cfg(target_os = "macos")]
-    // {
-    //     sdl.set_gl_context_flags(video::GlContextFlags::FORWARD_COMPATIBLE)
-    //         .unwrap();
-    // }
+struct Snake {
+    body: Vec<(u16, u16)>,
+    direction: Direction,
+}
 
-    // Define window attributes
-    let win_args = video::CreateWinArgs {
-        title: "Snake Game",
-        width: 800,
-        height: 600,
-        allow_high_dpi: true,
-        borderless: false,
-        resizable: false,
-    };
+#[derive(Clone, Copy)]
+enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
 
-    // Create the window and OpenGL context
-    let _win = sdl
-        .create_gl_window(win_args)
-        .expect("Couldn't make a window and context");
+struct Game {
+    snake: Snake,
+    food: (u16, u16),
+    score: u16,
+    game_over: bool,
+    width: u16,
+    height: u16,
+}
 
-    // Main event loop
-    'main_loop: loop {
-        // Handle events
-        while let Some(event) = sdl.poll_events() {
-            match event {
-                (events::Event::Quit, _) => break 'main_loop,
-                _ => (),
-            }
+impl Snake {
+    fn new(x: u16, y: u16) -> Self {
+        Self {
+            body: vec![(x, y), (x - 1, y), (x - 2, y)],
+            direction: Direction::Right,
         }
+    }
 
-        // Here you can update the world state and render
+    fn move_forward(&mut self) {
+        let head = self.body[0];
+        let new_head = match self.direction {
+            Direction::Up => (head.0, head.1 - 1),
+            Direction::Down => (head.0, head.1 + 1),
+            Direction::Left => (head.0 - 1, head.1),
+            Direction::Right => (head.0 + 1, head.1),
+        };
+        self.body.insert(0, new_head);
+        self.body.pop();
+    }
+
+    fn change_direction(&mut self, new_dir: Direction) {
+        if !matches!(
+            (new_dir, &self.direction),
+            (Direction::Up, Direction::Down)
+                | (Direction::Down, Direction::Up)
+                | (Direction::Left, Direction::Right)
+                | (Direction::Right, Direction::Left)
+        ) {
+            self.direction = new_dir;
+        }
     }
 }
 
-// fn main() -> anyhow::Result<()> {
-//     let mut stdout: std::io::Stdout = stdout();
-//     // let mut cx = 0;
-//     // let mut cy = 0;
-//     terminal::enable_raw_mode()?;
-//     stdout.execute(EnterAlternateScreen)?;
-//     stdout.execute(terminal::Clear(terminal::ClearType::All))?;
-//     let (cols, rows) = terminal::size()?;
-//     let mut rng = rand::thread_rng();
-//     let mut x = rng.gen_range(0..cols);
-//     let mut y = rng.gen_range(0..rows);
-//     loop {
-//         // stdout.queue(cursor::MoveTo(cx, cy))?;
-//         stdout.queue(cursor::MoveTo(x, y))?;
-//         stdout.queue(crossterm::style::Print(" "))?;
-//         x = rng.gen_range(0..cols);
-//         y = rng.gen_range(0..rows);
-//         stdout.queue(cursor::Hide)?;
-//         stdout
-//             .execute(cursor::MoveTo(x, y))?
-//             .execute(crossterm::style::SetForegroundColor(
-//                 crossterm::style::Color::Green,
-//             ))?
-//             .execute(crossterm::style::Print("*"))?;
-//         stdout.flush()?;
+impl Game {
+    fn new(width: u16, height: u16) -> Self {
+        let mid_x = width / 2;
+        let mid_y = height / 2;
+        Self {
+            snake: Snake::new(mid_x, mid_y),
+            food: (0, 0),
+            score: 0,
+            game_over: false,
+            width,
+            height,
+        }
+    }
 
-//         match read()? {
-//             crossterm::event::Event::Key(event) => match event.code {
-//                 crossterm::event::KeyCode::Char('q') => break,
+    fn spawn_food(&mut self) {
+        let mut rng = rand::thread_rng();
+        loop {
+            let x = rng.gen_range(1..self.width);
+            let y = rng.gen_range(1..self.height);
+            if !self.snake.body.contains(&(x, y)) {
+                self.food = (x, y);
+                break;
+            }
+        }
+    }
 
-//                 _ => {}
-//             },
-//             _ => {}
-//         }
-//     }
-//     stdout.queue(cursor::Show)?;
+    fn check_collision(&self) -> bool {
+        let head = self.snake.body[0];
 
-//     stdout.execute(LeaveAlternateScreen)?;
-//     terminal::disable_raw_mode()?;
+        // Check wall collision
+        if head.0 == 0 || head.0 >= self.width || head.1 == 0 || head.1 >= self.height {
+            return true;
+        }
 
-//     Ok(())
-// }
+        // Check self collision
+        self.snake.body.iter().skip(1).any(|&pos| pos == head)
+    }
+
+    fn update(&mut self) {
+        self.snake.move_forward();
+
+        if self.snake.body[0] == self.food {
+            self.score += 1;
+            self.snake.body.push(*self.snake.body.last().unwrap());
+            self.spawn_food();
+        }
+
+        if self.check_collision() {
+            self.game_over = true;
+        }
+    }
+
+    fn draw(&self, prev_snake: &[(u16, u16)], prev_food: (u16, u16)) -> io::Result<()> {
+        let mut stdout = io::stdout();
+
+        // Clear previous snake tail
+        if let Some(&(x, y)) = prev_snake.last() {
+            stdout.execute(crossterm::cursor::MoveTo(x, y))?;
+            print!(" ");
+        }
+
+        // Draw new snake
+        for &(x, y) in &self.snake.body {
+            stdout.execute(crossterm::cursor::MoveTo(x, y))?;
+            print!("■");
+        }
+
+        // Clear previous food
+        stdout.execute(crossterm::cursor::MoveTo(prev_food.0, prev_food.1))?;
+        print!(" ");
+
+        // Draw new food
+        stdout.execute(crossterm::cursor::MoveTo(self.food.0, self.food.1))?;
+        print!("★");
+
+        // Draw borders
+        for x in 1..self.width {
+            stdout.execute(crossterm::cursor::MoveTo(x, 0))?;
+            print!("─");
+            stdout.execute(crossterm::cursor::MoveTo(x, self.height))?;
+            print!("─");
+        }
+        for y in 1..self.height {
+            stdout.execute(crossterm::cursor::MoveTo(0, y))?;
+            print!("│");
+            stdout.execute(crossterm::cursor::MoveTo(self.width, y))?;
+            print!("│");
+        }
+
+        // Draw corners
+        stdout.execute(crossterm::cursor::MoveTo(0, 0))?;
+        print!("┌");
+        stdout.execute(crossterm::cursor::MoveTo(self.width, 0))?;
+        print!("┐");
+        stdout.execute(crossterm::cursor::MoveTo(0, self.height))?;
+        print!("└");
+        stdout.execute(crossterm::cursor::MoveTo(self.width, self.height))?;
+        print!("┘");
+
+        stdout.flush()?;
+        Ok(())
+    }
+}
+
+fn main() -> io::Result<()> {
+    // Terminal setup
+    let mut stdout = io::stdout();
+    enable_raw_mode()?;
+    stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(Hide)?;
+
+    // Game setup
+    let width = 40; // Fixed width
+    let height = 20; // Fixed height
+    let mut game = Game::new(width, height);
+    game.spawn_food();
+    let mut last_update = Instant::now();
+    let update_interval = Duration::from_millis(75); // Faster speed
+
+    let mut prev_snake = game.snake.body.clone();
+    let mut prev_food = game.food;
+
+    // Game loop
+    while !game.game_over {
+        // Input handling
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key_event) = event::read()? {
+                match key_event.code {
+                    KeyCode::Up => game.snake.change_direction(Direction::Up),
+                    KeyCode::Down => game.snake.change_direction(Direction::Down),
+                    KeyCode::Left => game.snake.change_direction(Direction::Left),
+                    KeyCode::Right => game.snake.change_direction(Direction::Right),
+                    KeyCode::Char('q') | KeyCode::Esc => game.game_over = true,
+                    _ => {}
+                }
+            }
+        }
+
+        // Update game state
+        if last_update.elapsed() >= update_interval {
+            game.update();
+            last_update = Instant::now();
+        }
+
+        // Render
+        game.draw(&prev_snake, prev_food)?;
+        prev_snake = game.snake.body.clone();
+        prev_food = game.food;
+    }
+
+    // Cleanup
+    stdout.execute(Show)?;
+    stdout.execute(LeaveAlternateScreen)?;
+    disable_raw_mode()?;
+
+    println!("Game Over! Score: {}", game.score);
+    Ok(())
+}
